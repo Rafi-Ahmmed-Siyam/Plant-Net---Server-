@@ -5,6 +5,7 @@ const cookieParser = require('cookie-parser');
 const { MongoClient, ServerApiVersion, ObjectId } = require('mongodb');
 const jwt = require('jsonwebtoken');
 const morgan = require('morgan');
+const nodemailer = require('nodemailer');
 
 const port = process.env.PORT || 9000;
 const app = express();
@@ -37,6 +38,50 @@ const verifyToken = async (req, res, next) => {
       }
       req.user = decoded;
       next();
+   });
+};
+
+// Send E-mail using Nodemailer
+const sendEmail = async (emailAddress, emailData) => {
+   // const emailDatas = {
+   //    subject: 'This is a subject',
+   //    message: 'This is a mail message',
+   // };
+   // Create a transporter
+   const transporter = nodemailer.createTransport({
+      host: 'smtp.gmail.com',
+      port: 587,
+      secure: false, // true for 465, false for other ports
+      auth: {
+         user: process.env.NODEMAILER_USER,
+         pass: process.env.NODEMAILER_PASS,
+      },
+   });
+   // Verify Connection
+   transporter.verify((err, success) => {
+      if (err) {
+         console.log(err);
+      } else {
+         console.log('Transporter is ready for send email', success);
+      }
+   });
+
+   // Ready email Body
+   const emailBody = {
+      from: process.env.NODEMAILER_USER,
+      to: emailAddress,
+      subject: emailData?.subject,
+      html: `<p>${emailData?.message}</p>`, // HTML body
+   };
+
+   // create send method
+   transporter.sendMail(emailBody, (err, info) => {
+      if (err) {
+         console.log('This is found in send email function', err);
+      } else {
+         console.log(info);
+         console.log('email sent info' + info.response);
+      }
    });
 };
 
@@ -246,6 +291,7 @@ async function run() {
 
       // Get all Plants collection data for customer
       app.get('/plants', async (req, res) => {
+         // sendEmail();
          const result = await plantsCollection.find().toArray();
          res.send(result);
       });
@@ -279,10 +325,24 @@ async function run() {
          res.send(result);
       });
 
-      // Save Order dta in DB
+      // Save Order dta in DB by Customer
       app.post('/orders', verifyToken, async (req, res) => {
          const orderInfo = req.body;
          const result = await ordersCollection.insertOne(orderInfo);
+
+         //  Email send customer and seller
+         if (result?.insertedId) {
+            // sent email to Customer
+            sendEmail(orderInfo?.customer?.email, {
+               subject: 'Order Successful',
+               message: `You have placed an order successfully. Transaction Id: ${result?.insertedId}`,
+            });
+            // sent email to Seller
+            sendEmail(orderInfo?.seller, {
+               subject: 'Hurry! You have an order to process',
+               message: `Get the plant ready for ${orderInfo?.customer?.name}`,
+            });
+         }
          res.send(result);
       });
 
