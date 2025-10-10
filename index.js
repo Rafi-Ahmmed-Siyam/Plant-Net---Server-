@@ -1,11 +1,16 @@
 require('dotenv').config();
 const express = require('express');
+
 const cors = require('cors');
 const cookieParser = require('cookie-parser');
 const { MongoClient, ServerApiVersion, ObjectId } = require('mongodb');
 const jwt = require('jsonwebtoken');
 const morgan = require('morgan');
 const nodemailer = require('nodemailer');
+const stripe = require('stripe')(
+   process.env.PAYMENT_SECRET_KEY
+   // { apiVersion: '2025-09-30.preview' }
+);
 
 const port = process.env.PORT || 9000;
 const app = express();
@@ -329,7 +334,7 @@ async function run() {
       app.post('/orders', verifyToken, async (req, res) => {
          const orderInfo = req.body;
          const result = await ordersCollection.insertOne(orderInfo);
-
+         console.log(orderInfo);
          //  Email send customer and seller
          if (result?.insertedId) {
             // sent email to Customer
@@ -381,6 +386,9 @@ async function run() {
                   $project: {
                      plantData: 0, //Remove plantData
                   },
+               },
+               {
+                  $sort: { _id: -1 },
                },
             ])
             .toArray();
@@ -479,6 +487,89 @@ async function run() {
 
          const result = await ordersCollection.deleteOne(query);
          res.send(result);
+      });
+
+      // Admin Stat
+      app.get('/admin-stat', verifyToken, verifyAdmin, async (req, res) => {
+         const totalUser = await usersCollection.countDocuments();
+         const totalPlant = await plantsCollection.estimatedDocumentCount();
+
+         // Total Revenue and total order
+         const totalResult = await ordersCollection
+            .aggregate([
+               {
+                  $group: {
+                     _id: null,
+                     totalOrders: { $sum: '$quantity' },
+                     totalRevenue: { $sum: '$price' },
+                  },
+               },
+            ])
+            .toArray();
+
+         // Get Chart data
+         const chartData = await ordersCollection
+            .aggregate([
+               {
+                  $group: {
+                     _id: {
+                        $dateToString: {
+                           format: '%d-%B-%Y',
+                           date: { $toDate: '$_id' },
+                        },
+                     },
+                     totalQuantity: { $sum: '$quantity' },
+                     totalPrice: { $sum: '$price' },
+                     totalOrder: { $sum: 1 },
+                  },
+               },
+               {
+                  $project: {
+                     _id: 0,
+                     date: '$_id',
+                     quantity: '$totalQuantity',
+                     price: '$totalPrice',
+                     orders: '$totalOrder',
+                  },
+               },
+               {
+                  $sort: { date: -1 },
+               },
+            ])
+            .toArray();
+
+         const { totalOrders, totalRevenue } = totalResult[0] || [];
+         res.send({
+            totalUser,
+            totalPlant,
+            totalOrders,
+            totalRevenue,
+            chartData,
+         });
+      });
+
+      // Create Payment Intent
+      app.post('/create-payment-intent', verifyToken, async (req, res) => {
+         const { quantity, plantId } = req.body;
+         console.log(req.body);
+         const plant = await plantsCollection.findOne({
+            _id: new ObjectId(plantId),
+         });
+
+         if (!plant) {
+            return res.status(400).send({ message: 'Plant Not Found' });
+         }
+         const totalPrice = quantity * plant.price * 100;
+         // console.log(totalPrice);
+         const paymentIntent = await stripe.paymentIntents.create({
+            amount: totalPrice,
+            currency: 'usd',
+            automatic_payment_methods: {
+               enabled: true,
+            },
+         });
+
+         res.send({ clientSecret: paymentIntent.client_secret, totalPrice });
       });
 
       // Send a ping to confirm a successful connection
